@@ -23,6 +23,7 @@ src/.idea/
 # Generated data and reports
 data/
 output/
+logs/
 
 # Temporary office lock files
 ~$*

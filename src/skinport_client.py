@@ -16,6 +16,7 @@ from typing import Any, Dict, List
 import requests
 
 from filters import MAX_SKINPORT_PRICE_HKD
+from normalization import parse_float, parse_int
 from project_paths import DATA_DIR, SKINPORT_RAW_JSON
 
 try:
@@ -77,9 +78,8 @@ def clean_items(raw: List[JsonDict]) -> List[JsonDict]:
       1. min_price is not None
       2. min_price >= PRICE_FLOOR_HKD  (cheap junk)
       3. market_hash_name does NOT contain blacklisted keywords
-    Each output item has exactly two fields:
-      - market_hash_name
-      - min_price
+    Output keeps Skinport pricing fields when the API provides them so the
+    analyzer can estimate buy-side execution risk.
     """
     PRICE_FLOOR_HKD = 10.0
     PRICE_CEIL_HKD = MAX_SKINPORT_PRICE_HKD
@@ -93,11 +93,10 @@ def clean_items(raw: List[JsonDict]) -> List[JsonDict]:
     stat_star = 0
 
     for item in raw:
-        min_price = item.get("min_price")
-        if min_price is None:
+        price = parse_float(item.get("min_price"))
+        if price is None:
             stat_no_price += 1
             continue
-        price = float(min_price)
         if price < PRICE_FLOOR_HKD:
             stat_cheap += 1
             continue
@@ -114,6 +113,13 @@ def clean_items(raw: List[JsonDict]) -> List[JsonDict]:
         cleaned.append({
             "market_hash_name": name,
             "min_price": price,
+            "mean_price": parse_float(item.get("mean_price")),
+            "median_price": parse_float(item.get("median_price")),
+            "max_price": parse_float(item.get("max_price")),
+            "quantity": parse_int(item.get("quantity")),
+            "currency": item.get("currency"),
+            "updated_at": item.get("updated_at"),
+            "item_page": item.get("item_page") or item.get("market_page"),
         })
 
     print(f"Cleaned: {len(cleaned)} items kept.")

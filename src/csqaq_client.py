@@ -7,6 +7,7 @@ resolves market_hash_name (cache → detail API fallback), saves cleaned data.
 Rate limit: randomized 3-7 second delays per project anti-bot rules.
 """
 import json
+import logging
 import os
 import re
 import sys
@@ -17,6 +18,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from filters import MAX_UU_PRICE_RMB
+from logging_utils import setup_logging
+from normalization import normalize_rate, parse_float, parse_int
 from project_paths import (
     CSQAQ_TOKEN_FILE,
     DATA_DIR,
@@ -40,6 +43,27 @@ MAX_RETRIES = 3
 REQUEST_DELAY_MIN = 3.0
 REQUEST_DELAY_MAX = 7.0
 CATEGORY_FILTER = ["普通"]
+
+LOGGER = logging.getLogger("csqaq_client")
+
+TRACKED_RAW_FIELDS = [
+    "yyyp_buy_price", "yyyp_sell_price",
+    "sell_price_1", "sell_price_7", "sell_price_15", "sell_price_30",
+    "sell_price_rate_1", "sell_price_rate_7", "sell_price_rate_15", "sell_price_rate_30",
+    "yyyp_buy_num", "yyyp_sell_num",
+    "buff_price_chg", "buff_buy_price", "buff_sell_price",
+    "steam_buy_price", "steam_sell_price",
+]
+PRICE_FIELDS = {
+    "yyyp_buy_price", "yyyp_sell_price",
+    "sell_price_1", "sell_price_7", "sell_price_15", "sell_price_30",
+    "buff_buy_price", "buff_sell_price", "steam_buy_price", "steam_sell_price",
+}
+RATE_FIELDS = {
+    "sell_price_rate_1", "sell_price_rate_7", "sell_price_rate_15", "sell_price_rate_30",
+    "buff_price_chg",
+}
+COUNT_FIELDS = {"yyyp_buy_num", "yyyp_sell_num"}
 
 WEAR_CN_TO_EN = {
     "崭新出厂": "Factory New", "略有磨损": "Minimal Wear",
@@ -71,7 +95,7 @@ def load_previous_market_hash_cache() -> Tuple[Dict[int, str], MarketHashCache]:
         with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
             previous = json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"  Warning: could not load previous output cache: {exc}")
+        LOGGER.warning("Could not load previous output cache: %s", exc)
         return by_id, by_name
 
     for item in previous:
@@ -94,14 +118,14 @@ def bind_local_ip() -> None:
     data = resp.json()
     if data.get("code") != 200:
         raise ValueError(f"IP bind failed: code={data.get('code')}, msg={data.get('msg')}")
-    print("  CSQAQ IP binding refreshed.")
+    LOGGER.info("CSQAQ IP binding refreshed.")
 
 
 def fetch_page(page: int) -> JsonDict:
     payload = {
         "page_index": page, "page_size": PAGE_SIZE,
         "filter": {"价格最低价": MIN_PRICE_RMB, "在售最少": 1, "类别": CATEGORY_FILTER},
-        "show_recently_price": False,
+        "show_recently_price": True,
     }
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -124,11 +148,11 @@ def fetch_all_items() -> List[JsonDict]:
     all_items: List[JsonDict] = []
     page = 1
     while True:
-        print(f"  Fetching page {page} ...", end=" ")
+        LOGGER.info("Fetching page %s ...", page)
         data = fetch_page(page)
         items = data["data"]
         all_items.extend(items)
-        print(f"{len(items)} items (total: {len(all_items)})")
+        LOGGER.info("Fetched %s items (total: %s)", len(items), len(all_items))
         if len(items) < PAGE_SIZE:
             break
         page += 1
@@ -142,9 +166,9 @@ def fetch_all_items_with_auth_recovery() -> List[JsonDict]:
         return fetch_all_items()
     except requests.exceptions.HTTPError as exc:
         if exc.response is not None and exc.response.status_code == 401:
-            print("\n  Authorization failed (401). Refreshing CSQAQ IP binding ...")
+            LOGGER.warning("Authorization failed (401). Refreshing CSQAQ IP binding ...")
             bind_local_ip()
-            print("  Retrying after IP binding refresh ...")
+            LOGGER.info("Retrying after IP binding refresh ...")
             time.sleep(random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX))
             return fetch_all_items()
         raise
@@ -184,13 +208,33 @@ def fetch_market_hash_name_from_api(csqaq_id: int) -> Optional[str]:
     return None
 
 
-def parse_optional_float(value: Any) -> Optional[float]:
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+def normalize_csqaq_fields(item: JsonDict) -> Tuple[JsonDict, List[str]]:
+    """Normalize tracked CSQAQ fields while keeping raw values traceable."""
+    entry: JsonDict = {}
+    issues: List[str] = []
+    max_abs_rate = 3.0
+
+    for field in TRACKED_RAW_FIELDS:
+        raw_value = item.get(field)
+        entry[f"raw_{field}"] = raw_value
+        if field in PRICE_FIELDS:
+            entry[field] = parse_float(raw_value, field, issues)
+        elif field in RATE_FIELDS:
+            entry[field] = normalize_rate(raw_value, max_abs_rate, field, issues)
+        elif field in COUNT_FIELDS:
+            parsed = parse_int(raw_value, field, issues)
+            entry[field] = parsed if parsed is not None else 0
+        else:
+            entry[field] = raw_value
+
+    # Backward-compatible aliases used by the existing analyzer and reports.
+    entry["uu_sell_price"] = entry.get("yyyp_sell_price")
+    entry["uu_buy_price"] = entry.get("yyyp_buy_price")
+    entry["uu_sell_num"] = entry.get("yyyp_sell_num", 0)
+    entry["uu_buy_num"] = entry.get("yyyp_buy_num", 0)
+    if issues:
+        entry["field_warnings"] = issues
+    return entry, issues
 
 
 def clean_and_resolve(raw: List[JsonDict], cache: MarketHashCache) -> List[JsonDict]:
@@ -210,7 +254,11 @@ def clean_and_resolve(raw: List[JsonDict], cache: MarketHashCache) -> List[JsonD
             stat_star += 1
             continue
 
-        uu_price = parse_optional_float(item.get("yyyp_sell_price"))
+        normalized_fields, field_issues = normalize_csqaq_fields(item)
+        if field_issues:
+            LOGGER.debug("Field conversion issues for %s: %s", name_cn, field_issues)
+
+        uu_price = normalized_fields.get("yyyp_sell_price")
         if uu_price is None:
             stat_no_price += 1
             continue
@@ -221,7 +269,7 @@ def clean_and_resolve(raw: List[JsonDict], cache: MarketHashCache) -> List[JsonD
             stat_too_high += 1
             continue
 
-        uu_buy_price = parse_optional_float(item.get("yyyp_buy_price"))
+        uu_buy_price = normalized_fields.get("yyyp_buy_price")
         if uu_buy_price is not None and uu_buy_price > uu_price:
             stat_buy_gt_sell += 1
             continue
@@ -241,29 +289,26 @@ def clean_and_resolve(raw: List[JsonDict], cache: MarketHashCache) -> List[JsonD
             "csqaq_id": item["id"],
             "name": name_cn,
             "market_hash_name": mhn,
-            "uu_sell_price": uu_price,
-            "uu_buy_price": uu_buy_price,
-            "uu_sell_num": item.get("yyyp_sell_num", 0),
-            "uu_buy_num": item.get("yyyp_buy_num", 0),
+            **normalized_fields,
         }
         if mhn:
             result.append(entry)
         else:
             need_api.append(entry)
 
-    print(f"  Price-filter kept: {len(result) + len(need_api)}")
-    print(f"    - no uu price: {stat_no_price}")
-    print(f"    - < {MIN_PRICE_RMB} RMB: {stat_cheap}")
-    print(f"    - > {MAX_PRICE_RMB} RMB: {stat_too_high}")
-    print(f"    - contains ★: {stat_star}")
-    print(f"    - yyyp_buy_price > yyyp_sell_price: {stat_buy_gt_sell}")
-    print(f"    - market_hash_name from cache: {from_cache}")
-    print(f"    - market_hash_name from previous output: {from_previous_output}")
-    print(f"    - need detail API: {len(need_api)}")
+    LOGGER.info("Price-filter kept: %s", len(result) + len(need_api))
+    LOGGER.info("  no uu price: %s", stat_no_price)
+    LOGGER.info("  < %.2f RMB: %s", MIN_PRICE_RMB, stat_cheap)
+    LOGGER.info("  > %.2f RMB: %s", MAX_PRICE_RMB, stat_too_high)
+    LOGGER.info("  contains star: %s", stat_star)
+    LOGGER.info("  yyyp_buy_price > yyyp_sell_price: %s", stat_buy_gt_sell)
+    LOGGER.info("  market_hash_name from cache: %s", from_cache)
+    LOGGER.info("  market_hash_name from previous output: %s", from_previous_output)
+    LOGGER.info("  need detail API: %s", len(need_api))
 
     # Phase 2: detail API for items without cache hit
     if need_api:
-        print(f"\n  Fetching market_hash_name via detail API for {len(need_api)} items ...")
+        LOGGER.info("Fetching market_hash_name via detail API for %s items ...", len(need_api))
         api_ok = 0
         for i, entry in enumerate(need_api):
             mhn = fetch_market_hash_name_from_api(entry["csqaq_id"])
@@ -271,14 +316,14 @@ def clean_and_resolve(raw: List[JsonDict], cache: MarketHashCache) -> List[JsonD
             if mhn:
                 api_ok += 1
             if (i + 1) % 200 == 0:
-                print(f"    API progress: {i + 1}/{len(need_api)}  |  resolved: {api_ok}")
+                LOGGER.info("API progress: %s/%s | resolved: %s", i + 1, len(need_api), api_ok)
             time.sleep(random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX))
-        print(f"    API done: {api_ok}/{len(need_api)} resolved")
+        LOGGER.info("Detail API done: %s/%s resolved", api_ok, len(need_api))
         result.extend(need_api)
 
     # Drop items still without market_hash_name (can't join later)
     final = [r for r in result if r["market_hash_name"]]
-    print(f"  Final (with market_hash_name): {len(final)}  |  dropped: {len(result) - len(final)}")
+    LOGGER.info("Final with market_hash_name: %s | dropped: %s", len(final), len(result) - len(final))
     return final
 
 
@@ -286,47 +331,49 @@ def save_json(items: List[JsonDict], path: str) -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False, indent=2)
-    print(f"  Saved {len(items)} items to {path}")
+    LOGGER.info("Saved %s items to %s", len(items), path)
 
 
 def main() -> None:
-    print("=== Sprint 2: UU (悠悠有品) Domestic Price Fetcher ===\n")
+    global LOGGER
+    LOGGER = setup_logging("csqaq_client", "csqaq_client")
+    LOGGER.info("=== Sprint 2: UU (悠悠有品) Domestic Price Fetcher ===")
 
     try:
         HEADERS["ApiToken"] = load_token()
     except FileNotFoundError:
-        print("[ERROR] .csqaq_token file not found in project root.", file=sys.stderr)
+        LOGGER.error(".csqaq_token file not found in project root.")
         sys.exit(1)
 
     try:
         cache = load_cache()
-        print(f"  Translation cache: {len(cache)} pairs loaded")
+        LOGGER.info("Translation cache: %s pairs loaded", len(cache))
 
-        print("\n[1/3] Fetching all items from CSQAQ ...")
+        LOGGER.info("[1/3] Fetching all items from CSQAQ ...")
         raw = fetch_all_items_with_auth_recovery()
-        print(f"      Total raw items: {len(raw)}")
+        LOGGER.info("Total raw items: %s", len(raw))
 
-        print("\n[2/3] Cleaning & resolving market_hash_name ...")
+        LOGGER.info("[2/3] Cleaning & resolving market_hash_name ...")
         cleaned = clean_and_resolve(raw, cache)
 
-        print("\n[3/3] Writing output ...")
+        LOGGER.info("[3/3] Writing output ...")
         save_json(cleaned, OUTPUT_FILE)
 
-        print(f"\n[OK] Sprint 2 complete -- {os.path.basename(OUTPUT_FILE)} is ready.\n")
+        LOGGER.info("[OK] Sprint 2 complete -- %s is ready.", os.path.basename(OUTPUT_FILE))
     except requests.exceptions.Timeout:
-        print("[ERROR] Request timed out.", file=sys.stderr)
+        LOGGER.error("Request timed out.")
         sys.exit(1)
     except requests.exceptions.ConnectionError:
-        print("[ERROR] Network connection failed.", file=sys.stderr)
+        LOGGER.error("Network connection failed.")
         sys.exit(1)
     except requests.exceptions.HTTPError as exc:
-        print(f"[ERROR] HTTP error -- {exc}", file=sys.stderr)
+        LOGGER.error("HTTP error -- %s", exc)
         sys.exit(1)
     except (json.JSONDecodeError, ValueError) as exc:
-        print(f"[ERROR] Parse error -- {exc}", file=sys.stderr)
+        LOGGER.error("Parse error -- %s", exc)
         sys.exit(1)
     except Exception as exc:
-        print(f"[ERROR] Unexpected: {type(exc).__name__} -- {exc}", file=sys.stderr)
+        LOGGER.error("Unexpected: %s -- %s", type(exc).__name__, exc)
         sys.exit(1)
 
 
