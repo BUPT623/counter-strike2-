@@ -1,0 +1,28 @@
+# Secrets and local credentials
+.csqaq_token
+.env
+.env.*
+
+# Python cache/build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE and assistant-local settings
+.vscode/
+.idea/
+.claude/
+src/.idea/
+
+# Generated data and reports
+data/
+output/
+
+# Temporary office lock files
+~$*
