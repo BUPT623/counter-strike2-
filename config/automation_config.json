@@ -1,0 +1,54 @@
+{
+  "scheduler": {
+    "interval_minutes": 120,
+    "success_jitter_seconds_min": 0,
+    "success_jitter_seconds_max": 0,
+    "failure_backoff_minutes": 45,
+    "active_hours": {
+      "enabled": true,
+      "start": "09:00",
+      "end": "24:00"
+    },
+    "between_scripts_delay_seconds_min": 3,
+    "between_scripts_delay_seconds_max": 7,
+    "run_skinport": true,
+    "run_csqaq": true,
+    "run_analyzer": true,
+    "timeouts_minutes": {
+      "skinport": 10,
+      "csqaq": 120,
+      "analyzer": 20
+    }
+  },
+  "notifications": {
+    "enabled": false,
+    "provider": "serverchan",
+    "dashboard_url": "http://127.0.0.1:8000/",
+    "max_items_per_digest": 8,
+    "digest_cooldown_minutes": 60,
+    "same_item_cooldown_hours": 12,
+    "score_change_threshold": 5,
+    "profit_change_threshold": 0.03,
+    "notify_on_empty": false,
+    "quiet_hours": {
+      "enabled": true,
+      "start": "00:00",
+      "end": "09:00",
+      "allow_grade_a": true,
+      "allow_profit_rate": 0.15
+    },
+    "bark": {
+      "base_url": "https://api.day.app",
+      "key_env": "CS_APP_BARK_KEY"
+    },
+    "ntfy": {
+      "server_url": "https://ntfy.sh",
+      "topic_env": "CS_APP_NTFY_TOPIC",
+      "token_env": "CS_APP_NTFY_TOKEN"
+    },
+    "serverchan": {
+      "base_url": "https://sctapi.ftqq.com",
+      "sendkey_env": "CS_APP_SERVERCHAN_SENDKEY"
+    }
+  }
+}

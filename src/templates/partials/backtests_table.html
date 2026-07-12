@@ -5,7 +5,7 @@
         <th>饰品</th>
         <th>状态</th>
         <th>等级</th>
-        <th>推荐分</th>
+        <th>推荐⭐</th>
         <th>采集时间</th>
         <th>目标回测</th>
         <th>Skinport成本</th>
@@ -25,7 +25,13 @@
         </td>
         <td><span class="pill status-{{ row.backtest_status }}">{{ row.backtest_status }}</span></td>
         <td><span class="grade grade-{{ row.recommendation_grade or 'NA' }}">{{ row.recommendation_grade or "-" }}</span></td>
-        <td>{{ row.recommendation_score|score }}</td>
+        <td>
+          <span class="star-rating" title="推荐分 {{ row.recommendation_score|score }}">
+            <span class="stars-base">★★★★★</span>
+            <span class="stars-fill" style="width: {{ row.recommendation_score|star_width }}">★★★★★</span>
+          </span>
+          <small class="star-score">{{ row.recommendation_score|star_label }}</small>
+        </td>
         <td>{{ row.collected_at|short_time }}</td>
         <td>{{ row.target_check_at|short_time }}</td>
         <td>{{ row.skinport_cost_cny|money }}</td>

@@ -16,11 +16,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from project_paths import OUTPUT_DIR, RECOMMENDATION_BACKTEST_DB
+from recommendation_pool import (
+    filter_recommendations as pool_filter_recommendations,
+    latest_report_path as pool_latest_report_path,
+    load_report_sheet as pool_load_report_sheet,
+    star_label,
+    star_width,
+)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(APP_DIR, "templates")
 STATIC_DIR = os.path.join(APP_DIR, "static")
-PAGE_SIZE = 80
+PAGE_SIZE = 300
+SPIKE_PROFIT_THRESHOLD = 0.10
 
 app = FastAPI(title="CS-APP Dashboard")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -42,6 +50,11 @@ def fmt_score(value: Any) -> str:
     return "-" if number is None else f"{number:.1f}"
 
 
+def fmt_qty(value: Any) -> str:
+    number = _to_float(value)
+    return "-" if number is None else f"{int(number):,}"
+
+
 def short_time(value: Any) -> str:
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return "-"
@@ -52,7 +65,30 @@ def short_time(value: Any) -> str:
 templates.env.filters["money"] = fmt_money
 templates.env.filters["pct"] = fmt_pct
 templates.env.filters["score"] = fmt_score
+templates.env.filters["qty"] = fmt_qty
 templates.env.filters["short_time"] = short_time
+templates.env.filters["star_label"] = star_label
+templates.env.filters["star_width"] = star_width
+
+CATEGORY_LABELS = {
+    "STABLE_ARBITRAGE": "稳定搬砖",
+    "SPIKE_RISK": "异常上涨",
+    "SPIKE_RISK_PROFIT": "异常上涨",
+    "HIGH_VOLATILITY": "异常波动",
+    "DIP_OPPORTUNITY": "异常下跌",
+    "TREND_CONFLICT": "趋势冲突",
+    "CROSS_MARKET_DIVERGENCE": "跨平台异常",
+    "NOT_RECOMMENDED": "未推荐",
+    "INSUFFICIENT_DATA": "数据不足",
+    "BACKTEST_STRONG": "回测强推荐",
+}
+
+SUBCATEGORY_LABELS = {
+    "SPIKE_RISK": "异常上涨",
+    "DIP_OPPORTUNITY": "异常下跌",
+    "TREND_CONFLICT": "趋势冲突",
+    "CROSS_MARKET_DIVERGENCE": "跨平台异常",
+}
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -73,14 +109,152 @@ def _clean_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
         for key, value in list(record.items()):
             if isinstance(value, float) and math.isnan(value):
                 record[key] = None
+        display_category = record.get("display_category") or record.get("candidate_category")
+        record["display_category_cn"] = localize_category(display_category)
+        record["candidate_subcategory_cn"] = localize_subcategories(record.get("candidate_subcategory"))
     return records
 
 
+def localize_category(value: Any) -> str:
+    text = str(value or "")
+    return CATEGORY_LABELS.get(text, text or "-")
+
+
+def localize_subcategories(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    parts = [part.strip() for part in text.split("|")]
+    labels = [SUBCATEGORY_LABELS.get(part, part) for part in parts if part]
+    return " | ".join(dict.fromkeys(labels))
+
+
+def _apply_text_filter(df: pd.DataFrame, q: str) -> pd.DataFrame:
+    if not q or df.empty:
+        return df
+    needle = q.lower()
+    name_col = df.get("name_cn", pd.Series("", index=df.index)).fillna("").astype(str).str.lower()
+    hash_col = df.get("market_hash_name", pd.Series("", index=df.index)).fillna("").astype(str).str.lower()
+    return df[name_col.str.contains(needle, regex=False) | hash_col.str.contains(needle, regex=False)]
+
+
+def _apply_grade_filter(df: pd.DataFrame, grade: str) -> pd.DataFrame:
+    if grade and grade != "ALL" and "recommendation_grade" in df.columns:
+        return df[df["recommendation_grade"].fillna("") == grade]
+    return df
+
+
+def _sort_by_profit(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    sort_cols = [col for col in ["flat_roi", "recommendation_score", "stress_roi"] if col in df.columns]
+    if not sort_cols:
+        return df
+    return df.sort_values(sort_cols, ascending=[False] * len(sort_cols))
+
+
+def _sort_stable(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    sort_cols = [col for col in ["recommendation_score", "stress_roi", "flat_roi"] if col in df.columns]
+    if not sort_cols:
+        return df
+    return df.sort_values(sort_cols, ascending=[False] * len(sort_cols))
+
+
+def _tag_rows(df: pd.DataFrame, label: str) -> pd.DataFrame:
+    tagged = df.copy()
+    tagged["display_category"] = label
+    return tagged
+
+
+def _subcategory_contains(df: pd.DataFrame, keyword: str) -> pd.Series:
+    if "candidate_subcategory" not in df.columns:
+        return pd.Series(False, index=df.index)
+    return df["candidate_subcategory"].fillna("").astype(str).str.contains(keyword, regex=False)
+
+
+def _backtest_record_to_recommendation(row: Dict[str, Any]) -> Dict[str, Any]:
+    cost = _to_float(row.get("skinport_cost_cny"))
+    buy_price = _to_float(row.get("yyyp_buy_price"))
+    actual_roi = _to_float(row.get("actual_7d_roi"))
+    flat_roi = actual_roi if actual_roi is not None else (
+        (buy_price - cost) / cost if buy_price is not None and cost and cost > 0 else None
+    )
+    status = row.get("backtest_status") or "-"
+    target = short_time(row.get("target_check_at"))
+    return {
+        "name_cn": row.get("name"),
+        "market_hash_name": row.get("market_hash_name"),
+        "display_category": "BACKTEST_STRONG",
+        "candidate_category": row.get("candidate_category"),
+        "candidate_subcategory": row.get("candidate_subcategory"),
+        "recommendation_grade": row.get("recommendation_grade"),
+        "recommendation_score": row.get("recommendation_score"),
+        "risk_level": "回测",
+        "risk_score": None,
+        "min_price": row.get("skinport_min_price"),
+        "yyyp_buy_price": row.get("yyyp_buy_price"),
+        "yyyp_sell_price": row.get("yyyp_sell_price"),
+        "yyyp_sell_num": None,
+        "flat_roi": flat_roi,
+        "risk_reasons": f"来自7天回测库强推荐样本；状态 {status}；目标回测 {target}",
+        "recommendation_reasons": "",
+    }
+
+
+def filter_backtest_strong_recommendations(grade: str, q: str, limit: int = 20) -> pd.DataFrame:
+    where = ["(recommendation_score > 60 OR recommendation_grade IN ('A', 'B'))"]
+    params: List[Any] = []
+    if grade and grade != "ALL":
+        where.append("recommendation_grade = ?")
+        params.append(grade)
+    if q:
+        where.append("(name LIKE ? OR market_hash_name LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
+    params.append(limit)
+    rows = query_all(
+        f"""
+        SELECT *
+        FROM recommendation_backtest
+        WHERE {" AND ".join(where)}
+        ORDER BY recommendation_score DESC, collected_at DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    return pd.DataFrame([_backtest_record_to_recommendation(row) for row in rows])
+
+
+def build_highlight_recommendations(df: pd.DataFrame, grade: str, q: str) -> pd.DataFrame:
+    df = _apply_grade_filter(_apply_text_filter(df, q), grade)
+    if df.empty:
+        return df
+
+    frames: List[pd.DataFrame] = []
+    category_col = df.get("candidate_category", pd.Series("", index=df.index)).fillna("")
+
+    stable = _sort_stable(df[category_col == "STABLE_ARBITRAGE"]).copy()
+    if not stable.empty:
+        frames.append(_tag_rows(stable, "STABLE_ARBITRAGE"))
+
+    spike_mask = _subcategory_contains(df, "SPIKE_RISK")
+    if "flat_roi" in df.columns:
+        spike_mask = spike_mask & (pd.to_numeric(df["flat_roi"], errors="coerce") > SPIKE_PROFIT_THRESHOLD)
+    spike = _sort_by_profit(df[spike_mask])
+    if not spike.empty:
+        frames.append(_tag_rows(spike, "SPIKE_RISK_PROFIT"))
+
+    if not frames:
+        return df.head(0)
+    highlights = pd.concat(frames, ignore_index=True)
+    if "market_hash_name" in highlights.columns:
+        highlights = highlights.drop_duplicates(subset=["market_hash_name"], keep="first")
+    return highlights
+
+
 def latest_report_path() -> Optional[str]:
-    candidates = glob(os.path.join(OUTPUT_DIR, "profit_report*.xlsx"))
-    if not candidates:
-        return None
-    return max(candidates, key=os.path.getmtime)
+    return pool_latest_report_path()
 
 
 @lru_cache(maxsize=16)
@@ -90,14 +264,7 @@ def _load_report_sheet(path: str, mtime_ns: int, sheet_name: str) -> pd.DataFram
 
 
 def load_report_sheet(sheet_name: str) -> pd.DataFrame:
-    path = latest_report_path()
-    if not path:
-        return pd.DataFrame()
-    stat = os.stat(path)
-    try:
-        return _load_report_sheet(path, stat.st_mtime_ns, sheet_name).copy()
-    except ValueError:
-        return pd.DataFrame()
+    return pool_load_report_sheet(sheet_name)
 
 
 def backtest_exists() -> bool:
@@ -172,23 +339,7 @@ def filter_recommendations(
     q: str,
     limit: int = PAGE_SIZE,
 ) -> List[Dict[str, Any]]:
-    df = load_report_sheet("all_items")
-    if df.empty:
-        return []
-    if category and category != "ALL" and "candidate_category" in df.columns:
-        df = df[df["candidate_category"].fillna("") == category]
-    if grade and grade != "ALL" and "recommendation_grade" in df.columns:
-        df = df[df["recommendation_grade"].fillna("") == grade]
-    if q:
-        needle = q.lower()
-        name_col = df.get("name_cn", pd.Series("", index=df.index)).fillna("").astype(str).str.lower()
-        hash_col = df.get("market_hash_name", pd.Series("", index=df.index)).fillna("").astype(str).str.lower()
-        df = df[name_col.str.contains(needle, regex=False) | hash_col.str.contains(needle, regex=False)]
-
-    sort_cols = [col for col in ["recommendation_score", "stress_roi", "expected_roi"] if col in df.columns]
-    if sort_cols:
-        df = df.sort_values(sort_cols, ascending=[False] * len(sort_cols))
-    return _clean_records(df.head(limit))
+    return pool_filter_recommendations(category, grade, q, limit)
 
 
 def filter_backtests(status: str, grade: str, q: str, limit: int = PAGE_SIZE) -> List[Dict[str, Any]]:
@@ -225,9 +376,9 @@ def dashboard(request: Request) -> HTMLResponse:
     context = {
         "request": request,
         "summary": build_summary(),
-        "recommendations": filter_recommendations("STABLE_ARBITRAGE", "ALL", ""),
+        "recommendations": filter_recommendations("HIGHLIGHTS", "ALL", ""),
         "backtests": filter_backtests("PENDING", "ALL", ""),
-        "category": "STABLE_ARBITRAGE",
+        "category": "HIGHLIGHTS",
         "grade": "ALL",
         "status": "PENDING",
         "q": "",
@@ -238,7 +389,7 @@ def dashboard(request: Request) -> HTMLResponse:
 @app.get("/partials/recommendations", response_class=HTMLResponse)
 def recommendations_partial(
     request: Request,
-    category: str = Query("STABLE_ARBITRAGE"),
+    category: str = Query("HIGHLIGHTS"),
     grade: str = Query("ALL"),
     q: str = Query(""),
 ) -> HTMLResponse:

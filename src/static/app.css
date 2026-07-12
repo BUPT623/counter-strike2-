@@ -177,6 +177,10 @@ table {
   min-width: 1180px;
 }
 
+.recommendation-table {
+  min-width: 1120px;
+}
+
 th,
 td {
   padding: 10px 12px;
@@ -206,9 +210,51 @@ td small {
   overflow-wrap: anywhere;
 }
 
+.subcat {
+  margin-top: 4px;
+  max-width: 180px;
+}
+
 .reason {
-  max-width: 420px;
+  max-width: 340px;
   color: #475467;
+}
+
+.risk-level {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.star-rating {
+  position: relative;
+  display: inline-block;
+  width: 78px;
+  height: 20px;
+  overflow: hidden;
+  color: #cbd5e1;
+  font-size: 15px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.stars-base,
+.stars-fill {
+  letter-spacing: 0;
+}
+
+.stars-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--star-width, 0%);
+  overflow: hidden;
+  color: #f59e0b;
+}
+
+.star-score {
+  margin-top: 2px;
+  max-width: 80px;
+  color: var(--muted);
 }
 
 .pill,

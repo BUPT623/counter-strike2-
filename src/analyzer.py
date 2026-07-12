@@ -22,7 +22,8 @@ from history_store import save_recommendation_backtest_snapshots
 from logging_utils import setup_logging
 from normalization import parse_float
 from pricing import add_pricing_columns
-from project_paths import DOMESTIC_RAW_JSON, PROFIT_REPORT_XLSX, RISK_CONFIG_JSON, SKINPORT_RAW_JSON
+from project_paths import DOMESTIC_RAW_JSON, PROFIT_REPORT_JSON, PROFIT_REPORT_XLSX, RISK_CONFIG_JSON, SKINPORT_RAW_JSON
+from report_store import export_profit_json_report
 from risk_model import add_risk_columns
 from risk_semantics import diagnose_rate_fields
 
@@ -31,6 +32,7 @@ JsonDict = Dict[str, Any]
 SKINPORT_FILE = SKINPORT_RAW_JSON
 DOMESTIC_FILE = DOMESTIC_RAW_JSON
 OUTPUT_FILE = PROFIT_REPORT_XLSX
+JSON_OUTPUT_FILE = PROFIT_REPORT_JSON
 
 DOMESTIC_FIELDS = [
     "csqaq_id", "name", "market_hash_name",
@@ -290,9 +292,12 @@ def main() -> None:
         backtest_stats = save_recommendation_backtest_snapshots(analyzed, logger=logger)
         summary = append_backtest_stats(summary, backtest_stats)
 
-        logger.info("[5/5] Exporting Excel workbook ...")
-        output_file = export_profit_workbook(analyzed, rejected, diagnostics, summary, OUTPUT_FILE)
-        logger.info("Excel report saved: %s", output_file)
+        logger.info("[5/5] Exporting JSON report ...")
+        output_file = export_profit_json_report(analyzed, rejected, diagnostics, summary, JSON_OUTPUT_FILE)
+        logger.info("JSON report saved: %s", output_file)
+        if os.getenv("CS_APP_EXPORT_EXCEL", "0").strip().lower() in {"1", "true", "yes", "on"}:
+            excel_file = export_profit_workbook(analyzed, rejected, diagnostics, summary, OUTPUT_FILE)
+            logger.info("Excel report saved: %s", excel_file)
 
         top_stable = analyzed[analyzed["candidate_category"] == "STABLE_ARBITRAGE"].head(5)
         logger.info("Top stable candidates: %s", len(top_stable))

@@ -43,21 +43,12 @@
   <div class="section-head">
     <div>
       <h2>推荐池</h2>
-      <p>先过经济性门槛，再按稳定与异常波动分组。</p>
+      <p>稳定搬砖全量展示，异常上涨仅展示利润率大于10%的饰品。</p>
     </div>
     <form class="filters"
           hx-get="/partials/recommendations"
           hx-target="#recommendation-table"
           hx-trigger="change, keyup delay:350ms from:input[name='q']">
-      <label>
-        分类
-        <select name="category">
-          <option value="STABLE_ARBITRAGE" selected>稳定搬砖</option>
-          <option value="HIGH_VOLATILITY">异常波动</option>
-          <option value="NOT_RECOMMENDED">未推荐</option>
-          <option value="ALL">全部</option>
-        </select>
-      </label>
       <label>
         等级
         <select name="grade">
@@ -69,6 +60,7 @@
           <option value="REJECT">REJECT</option>
         </select>
       </label>
+      <input type="hidden" name="category" value="HIGHLIGHTS">
       <label>
         搜索
         <input type="search" name="q" placeholder="名称或 market_hash_name">

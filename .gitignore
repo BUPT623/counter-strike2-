@@ -2,6 +2,7 @@
 .csqaq_token
 .env
 .env.*
+!.env.example
 
 # Python cache/build artifacts
 __pycache__/
