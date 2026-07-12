@@ -1,0 +1,45 @@
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>饰品</th>
+        <th>状态</th>
+        <th>等级</th>
+        <th>推荐分</th>
+        <th>采集时间</th>
+        <th>目标回测</th>
+        <th>Skinport成本</th>
+        <th>当时UU求购</th>
+        <th>7天后UU求购</th>
+        <th>真实收益</th>
+        <th>BUFF买</th>
+        <th>BUFF卖</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in backtests %}
+      <tr>
+        <td>
+          <strong>{{ row.name or row.market_hash_name }}</strong>
+          <small>{{ row.market_hash_name }}</small>
+        </td>
+        <td><span class="pill status-{{ row.backtest_status }}">{{ row.backtest_status }}</span></td>
+        <td><span class="grade grade-{{ row.recommendation_grade or 'NA' }}">{{ row.recommendation_grade or "-" }}</span></td>
+        <td>{{ row.recommendation_score|score }}</td>
+        <td>{{ row.collected_at|short_time }}</td>
+        <td>{{ row.target_check_at|short_time }}</td>
+        <td>{{ row.skinport_cost_cny|money }}</td>
+        <td>{{ row.yyyp_buy_price|money }}</td>
+        <td>{{ row.yyyp_buy_price_7d|money }}</td>
+        <td>{{ row.actual_7d_roi|pct }}</td>
+        <td>{{ row.buff_buy_price|money }}</td>
+        <td>{{ row.buff_sell_price|money }}</td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="12" class="empty">没有符合当前筛选条件的回测记录。</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

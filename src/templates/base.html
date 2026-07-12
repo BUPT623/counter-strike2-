@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}CS-APP 看板{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>CS-APP 价差推荐看板</h1>
+      <p>本地分析结果与 7 天回测跟踪</p>
+    </div>
+    <nav>
+      <a href="#recommendations">推荐池</a>
+      <a href="#backtests">回测库</a>
+      <a href="/health">状态</a>
+    </nav>
+  </header>
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

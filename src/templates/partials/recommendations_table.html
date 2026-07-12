@@ -1,0 +1,45 @@
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>饰品</th>
+        <th>分类</th>
+        <th>等级</th>
+        <th>推荐分</th>
+        <th>静态</th>
+        <th>趋势</th>
+        <th>压力</th>
+        <th>风险</th>
+        <th>UU求购</th>
+        <th>UU售价</th>
+        <th>价差</th>
+        <th>风险原因</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in recommendations %}
+      <tr>
+        <td>
+          <strong>{{ item.name_cn or item.market_hash_name }}</strong>
+          <small>{{ item.market_hash_name }}</small>
+        </td>
+        <td><span class="pill category">{{ item.candidate_category or "-" }}</span></td>
+        <td><span class="grade grade-{{ item.recommendation_grade or 'NA' }}">{{ item.recommendation_grade or "-" }}</span></td>
+        <td>{{ item.recommendation_score|score }}</td>
+        <td>{{ item.flat_roi|pct }}</td>
+        <td>{{ item.expected_roi|pct }}</td>
+        <td>{{ item.stress_roi|pct }}</td>
+        <td>{{ item.risk_score|score }}</td>
+        <td>{{ item.yyyp_buy_price|money }}</td>
+        <td>{{ item.yyyp_sell_price|money }}</td>
+        <td>{{ item.yyyp_spread_rate|pct }}</td>
+        <td class="reason">{{ item.risk_reasons or item.recommendation_reasons or "-" }}</td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="12" class="empty">没有符合当前筛选条件的记录。</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

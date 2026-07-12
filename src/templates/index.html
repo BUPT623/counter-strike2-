@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="summary-grid">
+  <div class="metric">
+    <span>稳定候选</span>
+    <strong>{{ summary.stable_count }}</strong>
+  </div>
+  <div class="metric">
+    <span>异常波动</span>
+    <strong>{{ summary.high_count }}</strong>
+  </div>
+  <div class="metric">
+    <span>进入评分</span>
+    <strong>{{ summary.scored_count }}</strong>
+  </div>
+  <div class="metric">
+    <span>待回测</span>
+    <strong>{{ summary.pending_count }}</strong>
+  </div>
+  <div class="metric">
+    <span>已回测</span>
+    <strong>{{ summary.resolved_count }}</strong>
+  </div>
+  <div class="metric">
+    <span>真实均值</span>
+    <strong>{{ summary.avg_actual_roi|pct }}</strong>
+  </div>
+</section>
+
+<section class="source-strip">
+  <div>
+    <span>最新报表</span>
+    <strong>{{ summary.report_name }}</strong>
+  </div>
+  <div>
+    <span>最近采集</span>
+    <strong>{{ summary.latest_collected_at|short_time }}</strong>
+  </div>
+</section>
+
+<section class="panel" id="recommendations">
+  <div class="section-head">
+    <div>
+      <h2>推荐池</h2>
+      <p>先过经济性门槛，再按稳定与异常波动分组。</p>
+    </div>
+    <form class="filters"
+          hx-get="/partials/recommendations"
+          hx-target="#recommendation-table"
+          hx-trigger="change, keyup delay:350ms from:input[name='q']">
+      <label>
+        分类
+        <select name="category">
+          <option value="STABLE_ARBITRAGE" selected>稳定搬砖</option>
+          <option value="HIGH_VOLATILITY">异常波动</option>
+          <option value="NOT_RECOMMENDED">未推荐</option>
+          <option value="ALL">全部</option>
+        </select>
+      </label>
+      <label>
+        等级
+        <select name="grade">
+          <option value="ALL" selected>全部</option>
+          <option value="A">A</option>
+          <option value="B">B</option>
+          <option value="C">C</option>
+          <option value="D">D</option>
+          <option value="REJECT">REJECT</option>
+        </select>
+      </label>
+      <label>
+        搜索
+        <input type="search" name="q" placeholder="名称或 market_hash_name">
+      </label>
+    </form>
+  </div>
+  <div id="recommendation-table">
+    {% include "partials/recommendations_table.html" %}
+  </div>
+</section>
+
+<section class="panel" id="backtests">
+  <div class="section-head">
+    <div>
+      <h2>7 天回测库</h2>
+      <p>只保存通过经济性门槛的样本，到期后自动写入真实收益。</p>
+    </div>
+    <form class="filters"
+          hx-get="/partials/backtests"
+          hx-target="#backtest-table"
+          hx-trigger="change, keyup delay:350ms from:input[name='q']">
+      <label>
+        状态
+        <select name="status">
+          <option value="PENDING" selected>待回测</option>
+          <option value="RESOLVED">已回测</option>
+          <option value="ALL">全部</option>
+        </select>
+      </label>
+      <label>
+        等级
+        <select name="grade">
+          <option value="ALL" selected>全部</option>
+          <option value="A">A</option>
+          <option value="B">B</option>
+          <option value="C">C</option>
+          <option value="D">D</option>
+        </select>
+      </label>
+      <label>
+        搜索
+        <input type="search" name="q" placeholder="名称或 market_hash_name">
+      </label>
+    </form>
+  </div>
+  <div id="backtest-table">
+    {% include "partials/backtests_table.html" %}
+  </div>
+</section>
+{% endblock %}

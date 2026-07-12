@@ -18,7 +18,7 @@ from Exchange_Rate import get_hkd_to_cny_rate
 from config_loader import load_config
 from excel_report import export_profit_workbook
 from filters import MAX_SKINPORT_PRICE_HKD, MAX_UU_PRICE_RMB
-from history_store import save_market_snapshot
+from history_store import save_recommendation_backtest_snapshots
 from logging_utils import setup_logging
 from normalization import parse_float
 from pricing import add_pricing_columns
@@ -206,6 +206,14 @@ def build_summary(
     return pd.DataFrame(rows)
 
 
+def append_backtest_stats(summary: pd.DataFrame, stats: Dict[str, Any]) -> pd.DataFrame:
+    additions = [
+        {"metric": f"backtest_{key}", "value": value}
+        for key, value in stats.items()
+    ]
+    return pd.concat([summary, pd.DataFrame(additions)], ignore_index=True)
+
+
 def analyze(
     skinport_df: pd.DataFrame,
     domestic_df: pd.DataFrame,
@@ -278,8 +286,9 @@ def main() -> None:
             skinport_df, domestic_df, exchange_rate, config, logger
         )
 
-        logger.info("[4/5] Saving historical snapshot ...")
-        save_market_snapshot(analyzed, logger=logger)
+        logger.info("[4/5] Saving economic-gate backtest snapshots ...")
+        backtest_stats = save_recommendation_backtest_snapshots(analyzed, logger=logger)
+        summary = append_backtest_stats(summary, backtest_stats)
 
         logger.info("[5/5] Exporting Excel workbook ...")
         output_file = export_profit_workbook(analyzed, rejected, diagnostics, summary, OUTPUT_FILE)
