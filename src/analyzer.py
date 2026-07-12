@@ -192,6 +192,12 @@ def build_summary(
     if "risk_level" in analyzed.columns:
         for level, count in analyzed["risk_level"].fillna("UNKNOWN").value_counts().items():
             rows.append({"metric": f"risk_level_{level}", "value": int(count)})
+    if "recommendation_grade" in analyzed.columns:
+        for grade, count in analyzed["recommendation_grade"].fillna("UNKNOWN").value_counts().items():
+            rows.append({"metric": f"recommendation_grade_{grade}", "value": int(count)})
+    if "recommendation_stage" in analyzed.columns:
+        for stage, count in analyzed["recommendation_stage"].fillna("UNKNOWN").value_counts().items():
+            rows.append({"metric": f"recommendation_stage_{stage}", "value": int(count)})
     for _, diag in diagnostics.iterrows():
         rows.append({
             "metric": f"{diag.get('field')}_meaning",
@@ -283,12 +289,13 @@ def main() -> None:
         logger.info("Top stable candidates: %s", len(top_stable))
         for _, row in top_stable.iterrows():
             logger.info(
-                "%s | stress_roi=%.2f%% | risk=%s %.1f | score=%.3f",
+                "%s | stress_roi=%.2f%% | risk=%s %.1f | recommendation_score=%.1f | grade=%s",
                 str(row.get("name_cn"))[:45],
                 (row.get("stress_roi") or 0) * 100,
                 row.get("risk_level"),
                 row.get("risk_score") or 0,
-                row.get("risk_adjusted_score") or 0,
+                row.get("recommendation_score") or 0,
+                row.get("recommendation_grade"),
             )
 
         logger.info("[OK] Sprint 3 complete -- %s items analyzed.", len(analyzed))

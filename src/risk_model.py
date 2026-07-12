@@ -73,12 +73,19 @@ def normalize_period_returns(row: Dict[str, Any], config: Dict[str, Any]) -> Dic
         expected = sum(v * w for v, w in zip(valid_values, valid_weights)) / total_weight
         dispersion = weighted_std(valid_values, valid_weights)
         trend_range = max(valid_values) - min(valid_values)
-        worst = min([0.0] + valid_values)
     else:
         expected = 0.0
         dispersion = None
         trend_range = None
-        worst = 0.0
+
+    # 1 日涨跌只作为短期异常信号，不直接参与 7 天冷却期压力情景的历史最差值。
+    stress_values = [
+        returns.get("normalized_rate_7_to_7"),
+        returns.get("normalized_rate_15_to_7"),
+        returns.get("normalized_rate_30_to_7"),
+    ]
+    valid_stress_values = [v for v in stress_values if v is not None]
+    worst = min([0.0] + valid_stress_values) if valid_stress_values else 0.0
 
     r1 = returns.get("normalized_rate_1_to_7")
     r7 = returns.get("normalized_rate_7_to_7")
@@ -90,6 +97,7 @@ def normalize_period_returns(row: Dict[str, Any], config: Dict[str, Any]) -> Dic
         "volatility_proxy": dispersion,
         "trend_range": trend_range,
         "worst_historical_change": worst,
+        "worst_historical_periods_used": ",".join([p for p, v in zip(("7", "15", "30"), stress_values) if v is not None]),
         "short_term_acceleration": acceleration,
         "trend_periods_used": ",".join(used_periods),
     })
@@ -138,12 +146,14 @@ def stress_change(row: Dict[str, Any], config: Dict[str, Any]) -> float:
     spread = max(parse_float(row.get("yyyp_spread_rate")) or 0.0, 0.0)
     imbalance = parse_float(row.get("order_imbalance"))
     dispersion = max(parse_float(row.get("trend_dispersion")) or 0.0, 0.0)
+    short_term_penalty = parse_float(row.get("short_term_anomaly_penalty")) or 0.0
     imbalance_penalty = float(stress_cfg["imbalance_penalty_weight"]) * max(-(imbalance or 0.0), 0.0)
     change = (
         worst
         - float(stress_cfg["spread_penalty_weight"]) * spread
         - imbalance_penalty
         - float(stress_cfg["dispersion_penalty_weight"]) * dispersion
+        - short_term_penalty
         - calculate_cross_market_penalty(row, config)
     )
     return max(change, -max_stress_drop)
@@ -159,6 +169,131 @@ def _score(value: Optional[float], threshold: float, weight: float) -> float:
     if value is None or threshold <= 0:
         return 0.0
     return _bounded(value / threshold) * weight
+
+
+def _value(value: Any, default: float = 0.0) -> float:
+    parsed = parse_float(value)
+    return default if parsed is None else parsed
+
+
+def _trend_period_count(row: Dict[str, Any]) -> int:
+    periods = str(row.get("trend_periods_used") or "")
+    return len([p for p in periods.split(",") if p])
+
+
+def _component_score(value: Optional[float], floor: float, cap: float, weight: float) -> float:
+    if value is None or cap <= floor:
+        return 0.0
+    return _bounded((value - floor) / (cap - floor)) * weight
+
+
+def recommendation_grade(score: float, config: Dict[str, Any], gate_passed: bool) -> str:
+    if not gate_passed:
+        return "REJECT"
+    scoring = config["recommendation_scoring"]
+    if score >= float(scoring["grade_a_min"]):
+        return "A"
+    if score >= float(scoring["grade_b_min"]):
+        return "B"
+    if score >= float(scoring["grade_c_min"]):
+        return "C"
+    return "D"
+
+
+def calculate_short_term_anomaly_penalty(row: Dict[str, Any], config: Dict[str, Any]) -> float:
+    stress_cfg = config["stress_model"]
+    threshold = float(stress_cfg["short_term_anomaly_threshold"])
+    weight = float(stress_cfg["short_term_anomaly_penalty_weight"])
+    cap = float(stress_cfg["max_short_term_anomaly_penalty"])
+    acceleration = parse_float(row.get("short_term_acceleration"))
+    r1 = parse_float(row.get("normalized_rate_1_to_7"))
+    candidates = []
+    if acceleration is not None:
+        candidates.append(abs(acceleration))
+    if r1 is not None:
+        candidates.append(abs(r1))
+    if not candidates:
+        return 0.0
+    excess = max(candidates) - threshold
+    if excess <= 0:
+        return 0.0
+    return min(excess * weight, cap)
+
+
+def calculate_recommendation_score(row: Dict[str, Any], config: Dict[str, Any]) -> float:
+    gate = config["recommendation_gate"]
+    scoring = config["recommendation_scoring"]
+    roi_cap = float(scoring["roi_cap"])
+    score = 0.0
+    score += _component_score(parse_float(row.get("flat_roi")), float(gate["min_flat_roi"]), roi_cap, float(scoring["flat_roi_weight"]))
+    score += _component_score(parse_float(row.get("expected_roi")), float(gate["min_expected_roi"]), roi_cap, float(scoring["expected_roi_weight"]))
+    score += _component_score(parse_float(row.get("stress_roi")), float(gate["min_stress_roi"]), roi_cap, float(scoring["stress_roi_weight"]))
+    score += _bounded((parse_int(row.get("yyyp_buy_num")) or 0) / float(scoring["buy_num_cap"])) * float(scoring["liquidity_weight"])
+
+    dispersion = parse_float(row.get("trend_dispersion"))
+    spread = parse_float(row.get("yyyp_spread_rate"))
+    premium_values = [
+        abs(v) for v in (
+            parse_float(row.get("yyyp_buff_buy_premium")),
+            parse_float(row.get("yyyp_buff_sell_premium")),
+        ) if v is not None
+    ]
+    score += (1.0 - _bounded((dispersion or 0.0) / float(scoring["dispersion_cap"]))) * float(scoring["stability_weight"])
+    score += (1.0 - _bounded((spread or 0.0) / float(scoring["spread_cap"]))) * float(scoring["spread_weight"])
+    score += (1.0 - _bounded((max(premium_values) if premium_values else 0.0) / float(scoring["premium_cap"]))) * float(scoring["cross_market_weight"])
+    score += _bounded((_value(row.get("expected_profit")) / float(scoring["profit_cap"]))) * float(scoring["profit_weight"])
+    score -= _bounded(_value(row.get("risk_score")) / 100.0) * float(scoring["risk_penalty_weight"])
+    return max(0.0, min(100.0, score))
+
+
+def data_quality_gate(row: Dict[str, Any], config: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:
+    gate = config["recommendation_gate"]
+    codes: List[str] = []
+    reasons: List[str] = []
+    cost = parse_float(row.get("skinport_cost_cny"))
+    yyyp_buy = parse_float(row.get("yyyp_buy_price"))
+    if cost is None or cost <= 0 or yyyp_buy is None or yyyp_buy <= 0:
+        codes.append("INSUFFICIENT_PRICE_DATA")
+        reasons.append("成本或悠悠求购价缺失，无法可靠计算收益")
+    if _value(row.get("data_quality_risk_score")) > float(gate["max_data_quality_risk"]):
+        codes.append("DATA_QUALITY_GATE_FAILED")
+        reasons.append("字段缺失、语义置信度或转换质量未通过数据门槛")
+    if _trend_period_count(row) < int(gate["min_valid_trend_periods"]):
+        codes.append("INSUFFICIENT_TREND_PERIODS")
+        reasons.append("有效趋势周期不足，暂不进入推荐池")
+    return not codes, codes, reasons
+
+
+def economic_gate(row: Dict[str, Any], config: Dict[str, Any]) -> Tuple[bool, List[str], List[str]]:
+    gate = config["recommendation_gate"]
+    codes: List[str] = []
+    reasons: List[str] = []
+    flat_roi = parse_float(row.get("flat_roi"))
+    expected_roi = parse_float(row.get("expected_roi"))
+    stress_roi = parse_float(row.get("stress_roi"))
+    flat_profit = parse_float(row.get("flat_profit"))
+    spread = parse_float(row.get("yyyp_spread_rate"))
+    buy_num = parse_int(row.get("yyyp_buy_num")) or 0
+
+    if flat_roi is None or flat_roi < float(gate["min_flat_roi"]):
+        codes.append("LOW_FLAT_ROI")
+        reasons.append("静态收益未通过基本经济性门槛")
+    if expected_roi is None or expected_roi < float(gate["min_expected_roi"]):
+        codes.append("LOW_EXPECTED_ROI")
+        reasons.append("趋势情景收益未通过基本经济性门槛")
+    if stress_roi is None or stress_roi < float(gate["min_stress_roi"]):
+        codes.append("LOW_STRESS_ROI")
+        reasons.append("压力情景亏损超过临时容忍范围")
+    if flat_profit is None or flat_profit < float(gate["min_flat_profit"]):
+        codes.append("LOW_FLAT_PROFIT")
+        reasons.append("静态利润金额过低")
+    if buy_num < int(gate["min_yyyp_buy_num"]):
+        codes.append("LOW_BUY_DEPTH")
+        reasons.append("悠悠求购数量不足")
+    if spread is not None and spread > float(gate["max_spread_rate"]):
+        codes.append("WIDE_SPREAD_GATE_FAILED")
+        reasons.append("悠悠买卖价差超过推荐池上限")
+    return not codes, codes, reasons
 
 
 def risk_level(score: float, config: Dict[str, Any]) -> str:
@@ -212,9 +347,9 @@ def classify_row(row: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, str]:
     risk_reasons: List[str] = []
     rec_reasons: List[str] = []
     subcategories: List[str] = []
+    data_ok, data_codes, data_reasons = data_quality_gate(row, config)
+    econ_ok, econ_codes, econ_reasons = economic_gate(row, config)
 
-    cost = parse_float(row.get("skinport_cost_cny"))
-    yyyp_buy = parse_float(row.get("yyyp_buy_price"))
     flat_roi = parse_float(row.get("flat_roi"))
     expected_roi = parse_float(row.get("expected_roi"))
     stress_roi = parse_float(row.get("stress_roi"))
@@ -230,14 +365,30 @@ def classify_row(row: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, str]:
     buff_change = parse_float(row.get("buff_price_chg"))
     buy_premium = parse_float(row.get("yyyp_buff_buy_premium"))
     sell_premium = parse_float(row.get("yyyp_buff_sell_premium"))
-    risk_score_value = parse_float(row.get("risk_score")) or 100.0
+    risk_score_value = _value(row.get("risk_score"), 100.0)
+    recommendation_score = _value(row.get("recommendation_score"))
+    gate_passed = data_ok and econ_ok
 
-    if cost is None or cost <= 0 or yyyp_buy is None or yyyp_buy <= 0:
-        risk_codes.append("INSUFFICIENT_PRICE_DATA")
-        risk_reasons.append("成本或悠悠求购价缺失，无法可靠计算收益")
+    risk_codes.extend(data_codes)
+    risk_reasons.extend(data_reasons)
+    risk_codes.extend(econ_codes)
+    risk_reasons.extend(econ_reasons)
+
+    if not data_ok:
         return {
             "candidate_category": "INSUFFICIENT_DATA",
-            "candidate_subcategory": "INSUFFICIENT_DATA",
+            "candidate_subcategory": "",
+            "recommendation_stage": "DATA_GATE_FAILED",
+            "risk_codes": _joined_reasons(risk_codes),
+            "risk_reasons": _joined_reasons(risk_reasons),
+            "recommendation_reasons": "",
+        }
+
+    if not econ_ok:
+        return {
+            "candidate_category": "NOT_RECOMMENDED",
+            "candidate_subcategory": "",
+            "recommendation_stage": "ECONOMIC_GATE_FAILED",
             "risk_codes": _joined_reasons(risk_codes),
             "risk_reasons": _joined_reasons(risk_reasons),
             "recommendation_reasons": "",
@@ -306,6 +457,8 @@ def classify_row(row: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, str]:
         and buy_num >= int(stable_cfg["min_yyyp_buy_num"])
         and premium_ok
         and risk_score_value <= float(stable_cfg["max_risk_score"])
+        and recommendation_score >= float(stable_cfg["min_recommendation_score"])
+        and not subcategories
     )
 
     if stable:
@@ -321,9 +474,10 @@ def classify_row(row: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, str]:
         category = "STABLE_ARBITRAGE"
     elif subcategories:
         category = "HIGH_VOLATILITY"
+        rec_reasons.append("已通过基本经济性门槛，但存在异常波动或跨平台风险")
     elif flat_roi is not None and flat_roi > 0:
         category = "NOT_RECOMMENDED"
-        risk_reasons.append("账面有利润但风险或压力收益不满足稳定搬砖条件")
+        risk_reasons.append("账面有利润但推荐评分或稳定性不足")
     else:
         category = "NOT_RECOMMENDED"
         risk_reasons.append("当前静态收益不满足推荐条件")
@@ -331,6 +485,7 @@ def classify_row(row: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, str]:
     return {
         "candidate_category": category,
         "candidate_subcategory": _joined_reasons(subcategories),
+        "recommendation_stage": "SCORED",
         "risk_codes": _joined_reasons(risk_codes),
         "risk_reasons": _joined_reasons(risk_reasons),
         "recommendation_reasons": _joined_reasons(rec_reasons),
@@ -348,6 +503,7 @@ def analyze_row(row: Dict[str, Any], config: Dict[str, Any], semantic_confidence
     result["buy_sell_num_ratio"] = buy_sell_num_ratio(row.get("yyyp_buy_num"), row.get("yyyp_sell_num"))
     result.update(calculate_cross_market_metrics({**row, **result}))
     result.update(calculate_skinport_metrics(row))
+    result["short_term_anomaly_penalty"] = calculate_short_term_anomaly_penalty({**row, **result}, config)
 
     result["stress_change_7d"] = stress_change({**row, **result}, config)
     exit_fee_rate = float(config["risk_model"].get("exit_fee_rate", 0.0))
@@ -414,6 +570,13 @@ def analyze_row(row: Dict[str, Any], config: Dict[str, Any], semantic_confidence
 
     result["field_semantic_confidence"] = semantic_confidence
     result["data_quality_status"] = "OK" if data_quality_risk < 5 else "DEGRADED" if data_quality_risk < 10 else "INSUFFICIENT"
+    joined_for_scoring = {**row, **result}
+    data_ok, _, _ = data_quality_gate(joined_for_scoring, config)
+    econ_ok, _, _ = economic_gate(joined_for_scoring, config)
+    result["data_quality_gate_pass"] = data_ok
+    result["economic_gate_pass"] = econ_ok
+    result["recommendation_score"] = calculate_recommendation_score(joined_for_scoring, config) if data_ok else 0.0
+    result["recommendation_grade"] = recommendation_grade(result["recommendation_score"], config, data_ok and econ_ok)
     result["calculated_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     result.update(classify_row({**row, **result}, config))
     return result
@@ -434,6 +597,11 @@ def add_risk_columns(df: pd.DataFrame, config: Dict[str, Any], semantic_confiden
                 "risk_score": 100.0,
                 "risk_level": "VERY_HIGH",
                 "risk_adjusted_score": -100.0,
+                "recommendation_score": 0.0,
+                "recommendation_grade": "REJECT",
+                "recommendation_stage": "DATA_GATE_FAILED",
+                "data_quality_gate_pass": False,
+                "economic_gate_pass": False,
                 "field_semantic_confidence": semantic_confidence,
                 "data_quality_status": "INSUFFICIENT",
                 "calculated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),

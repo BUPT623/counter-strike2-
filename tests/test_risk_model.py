@@ -118,6 +118,16 @@ class RiskFormulaTests(unittest.TestCase):
         result = analyze_row(row, DEFAULT_CONFIG, "HIGH")
         self.assertGreaterEqual(result["stress_change_7d"], -DEFAULT_CONFIG["risk_model"]["max_stress_drop"])
 
+    def test_one_day_drop_not_used_as_worst_historical_change(self):
+        result = analyze_row(base_row(
+            sell_price_rate_1=-0.30,
+            sell_price_rate_7=0.02,
+            sell_price_rate_15=0.02,
+            sell_price_rate_30=0.02,
+        ), DEFAULT_CONFIG, "HIGH")
+        self.assertEqual(result["worst_historical_change"], 0.0)
+        self.assertGreater(result["short_term_anomaly_penalty"], 0.0)
+
     def test_risk_score_boundaries(self):
         self.assertEqual(risk_level(0, DEFAULT_CONFIG), "LOW")
         self.assertEqual(risk_level(35, DEFAULT_CONFIG), "MEDIUM")
@@ -145,6 +155,19 @@ class ClassificationTests(unittest.TestCase):
         ), DEFAULT_CONFIG, "HIGH")
         self.assertIn("SPIKE_RISK", result["candidate_subcategory"])
 
+    def test_no_profit_spike_does_not_pollute_high_volatility(self):
+        result = analyze_row(base_row(
+            yyyp_buy_price=80.0,
+            yyyp_sell_price=85.0,
+            sell_price_rate_1=0.05,
+            sell_price_rate_7=0.01,
+            sell_price_rate_15=0.0,
+            sell_price_rate_30=0.0,
+        ), DEFAULT_CONFIG, "HIGH")
+        self.assertEqual(result["candidate_category"], "NOT_RECOMMENDED")
+        self.assertEqual(result["candidate_subcategory"], "")
+        self.assertEqual(result["recommendation_stage"], "ECONOMIC_GATE_FAILED")
+
     def test_sample_c_dip_opportunity(self):
         result = analyze_row(base_row(
             sell_price_rate_1=-0.02,
@@ -164,8 +187,16 @@ class ClassificationTests(unittest.TestCase):
         ), DEFAULT_CONFIG, "HIGH")
         self.assertIn(result["candidate_category"], {"NOT_RECOMMENDED", "HIGH_VOLATILITY"})
 
+    def test_recommendation_score_and_grade_are_emitted(self):
+        result = analyze_row(base_row(), DEFAULT_CONFIG, "HIGH")
+        self.assertIn("recommendation_score", result)
+        self.assertIn("recommendation_grade", result)
+        self.assertEqual(result["recommendation_stage"], "SCORED")
+
     def test_trend_conflict_classification(self):
         result = analyze_row(base_row(
+            yyyp_buy_price=130.0,
+            yyyp_sell_price=134.0,
             sell_price_rate_1=0.03,
             sell_price_rate_7=-0.08,
             sell_price_rate_15=0.05,
