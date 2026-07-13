@@ -75,7 +75,7 @@ CS_APP_BARK_BASE_URL=https://api.day.app
 CS_APP_BARK_KEY=你的BarkKey
 ```
 
-项目根目录还需要放置 CSQAQ token：
+项目根目录还需要放置 CSQAQ token 并填写本地ip白名单(注册CSQAQ后可点开用户界面查看)：
 
 ```text
 .csqaq_token
@@ -159,26 +159,6 @@ E:\PythonEnvs\.venv\Scripts\python.exe src\large_deal_runner.py --once
 E:\PythonEnvs\.venv\Scripts\python.exe src\large_deal_runner.py --dry-run --once --ignore-window
 ```
 
-## 本地看板
-
-启动看板：
-
-```powershell
-E:\PythonEnvs\.venv\Scripts\python.exe src\web_app.py
-```
-
-访问：
-
-```text
-http://127.0.0.1:8000/
-```
-
-健康检查：
-
-```text
-http://127.0.0.1:8000/health
-```
-
 ## Windows 定时任务
 
 当前设计：
@@ -229,4 +209,4 @@ E:\PythonEnvs\.venv\Scripts\python.exe -m unittest discover -s tests -v
 - 失败后不会高频重试
 - 不包含绕过平台限制的逻辑
 
-请根据平台规则和自身账号情况谨慎使用。
+请根据平台规则和自身账号情况谨慎使用。个人使用禁止用作商业用途~
