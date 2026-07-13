@@ -1,0 +1,30 @@
+{
+  "filters": {
+    "skinport_min_price_hkd": 2300,
+    "skinport_max_price_hkd": 12000,
+    "uu_min_sell_price_rmb": 2000,
+    "uu_max_sell_price_rmb": 10000,
+    "min_uu_sell_num": 50
+  },
+  "scoring": {
+    "top_n": 5,
+    "profit_rate_weight": 60,
+    "profit_amount_weight": 40,
+    "roi_cap": 0.25,
+    "profit_cap_rmb": 1200
+  },
+  "scheduler": {
+    "active_hours": {
+      "enabled": true,
+      "start": "09:00",
+      "end": "24:00"
+    },
+    "between_scripts_delay_seconds_min": 3,
+    "between_scripts_delay_seconds_max": 7,
+    "timeouts_minutes": {
+      "skinport": 10,
+      "csqaq": 120,
+      "analyzer": 10
+    }
+  }
+}
